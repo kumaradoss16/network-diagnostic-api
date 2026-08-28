@@ -81,7 +81,7 @@ async def port_check(request: PortCheckRequest) -> PortCheckResult:
 )
 async def http_check(request: HTTPCheckRequest) -> HTTPCheckResult:
     _enforce_target_policy(request.url.host)
-    logger.info("Port check requested: url=%s", request.host, request.port)
+    logger.info("HTTP check requested: url=%s timeout=%s", request.url, request.timeout)
     return await check_http(str(request.url), timeout=request.timeout, follow_redirects=request.follow_redirects)
 
 
@@ -115,12 +115,3 @@ async def run(request: DiagnosticRunRequest) -> DiagnosticRunResult:
         ping_count=request.ping_count,
         timeout=request.timeout
     )
-
-
-
-
-
-
-
-
-

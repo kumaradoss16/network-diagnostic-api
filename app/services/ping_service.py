@@ -1,0 +1,107 @@
+import asyncio
+import logging
+import platform
+import re
+import time
+from ..schemas.responses import PingResult
+from ..schemas.common import DiagnosticStatus
+from ..utils.validators import resolve_to_ip
+
+logger = logging.getLogger(__name__)
+
+# Matches "time=12.3 ms" / "time<1 ms" on Linux/macOS.
+_UNIX_RTT_RE = re.compile(r"time[=<]\s*([\d.]+)\s*ms", re.IGNORECASE)
+# Matches "time=12ms" / "time<1ms" on Windows.
+_WINDOWS_RTT_RE = re.compile(r"time[=<]\s*(\d+)\s*ms", re.IGNORECASE)
+
+def build_ping_command(host: str, count: int, timeout: float) -> list[str]:
+    system = platform.system().lower()
+
+    if system == "windows":
+        return ["ping", "-n", str(count), "-w", str(int(timeout * 1000)), host]
+
+    return ["ping", "-c", str(count), "-W", str(max(1, int(timeout))), host]
+
+# Extract round trip times from ping output
+def parse_rtts(output: str) -> list[float]:
+    if platform.system().lower() == "windows":
+        matches = _WINDOWS_RTT_RE.findall(output)
+    else:
+        matches = _UNIX_RTT_RE.findall(output)
+    return [float(m) for m in matches]
+
+# helper resolves the hostname before pinging
+async  def _resolve(host: str) -> str | None:
+    loop = asyncio.get_running_loop()  # event loop manages asynchronous tasks
+    return await loop.run_in_executor(None, resolve_to_ip, host)
+
+class PingExecutionError(Exception):
+    pass
+
+async def _execute_ping(host: str, count, int, timeout: float) -> list[float]:
+    command = build_ping_command(host, count, timeout)
+    try:
+        # create_subprocess_exec() - executes the program directly with separate arguments.
+        process = await asyncio.create_subprocess_exec(*command,
+                                                       stdout=asyncio.subprocess.PIPE,
+                                                       stderr=asyncio.subprocess.PIPE)
+        overall_timeout = timeout * count + 5
+        # process.communicate() - waits for the process to finish and collects its output
+        stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=overall_timeout)
+        return parse_rtts(stdout.decode(errors="ignore"))
+    except asyncio.TimeoutError as exc:
+        raise PingExecutionError("Ping command time out.") from exc
+    except FileNotFoundError as exc:
+        raise PingExecutionError("The 'ping' utility is not available on this server.") from exc
+
+
+async def ping_host(host:str, count: int = 4, timeout: float = 2.0) -> PingResult:
+    start = time.perf_counter()
+    resolved_ip = await _resolve(host)
+
+    try:
+        rtts = await _execute_ping(host, count, timeout)
+    except PingExecutionError as exc:
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.warning("Ping execution failed for %s: %s", host, exc)
+        return PingResult(
+            target=host,
+            resolved_ip=resolved_ip,
+            packets_sent=count,
+            packets_received=0,
+            packet_loss_percent=100.0,
+            status=DiagnosticStatus.ERROR,
+            duration_ms=round(duration_ms, 2),
+            error=str(exc),
+        )
+
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    if not rtts:
+        logger.info("Ping to %s produced no successful replies", host)
+        return PingResult(
+            target=host,
+            resolved_ip=resolved_ip,
+            packets_sent=count,
+            packets_received=0,
+            packet_loss_percent=100.0,
+            status=DiagnosticStatus.ERROR,
+            duration_ms=round(duration_ms, 2),
+            error="Host did not respond to any ping packets (unreachable, blocking ICMP or invalid host).",
+        )
+
+    packet_loss = round((1 - len(rtts) / count) * 100, 2)
+    return PingResult(
+        target=host,
+        resolved_ip=resolved_ip,
+        packets_sent=count,
+        packets_received=len(rtts),
+        packet_loss_percent=packet_loss,
+        min_rtt_ms=round(min(rtts), 2),
+        avg_rtt_ms=round(sum(rtts) / len(rtts), 2),
+        max_rtt_ms=round(max(rtts), 2),
+        status=DiagnosticStatus.SUCCESS,
+        duration_ms=round(duration_ms, 2),
+    )
+
+

@@ -1005,8 +1005,10 @@ This is currently a solo/learning project.
 
 ## License
 
-`[TODO: Choose and add a project license]` - no `LICENSE` file currently exists in this repository.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## Author
 
-`[TODO: Add author name]` - GitHub: [kumaradoss16](https://github.com/kumaradoss16)
+**Kumaradoss S**
+
+GitHub: [@kumaradoss16](https://github.com/kumaradoss16)
